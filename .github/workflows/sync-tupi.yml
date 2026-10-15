@@ -1,0 +1,66 @@
+name: Sincronizar Tupi
+
+on:
+  schedule:
+    # 03:15 UTC = 00:15 em Brasília, todos os dias.
+    # O GitHub pode atrasar alguns minutos em horários de pico.
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+    inputs:
+      inicio:
+        description: "Data inicial AAAA-MM-DD (vazio = últimos 3 dias)"
+        required: false
+      fim:
+        description: "Data final AAAA-MM-DD (vazio = ontem)"
+        required: false
+
+concurrency:
+  group: sync-tupi
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sincronizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Baixar histórico da Tupi e gravar no Supabase
+        env:
+          TUPI_EMAIL: ${{ secrets.TUPI_EMAIL }}
+          TUPI_SENHA: ${{ secrets.TUPI_SENHA }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ESTACAO_PREFIXO: ${{ vars.ESTACAO_PREFIXO }}
+          ESTACAO_INICIO: ${{ vars.ESTACAO_INICIO }}
+          ESTACAO_FIM: ${{ vars.ESTACAO_FIM }}
+          ESTACAO_DIGITOS: ${{ vars.ESTACAO_DIGITOS }}
+          JANELA_DIAS: ${{ vars.JANELA_DIAS }}
+          INICIO: ${{ inputs.inicio }}
+          FIM: ${{ inputs.fim }}
+        run: |
+          ARGS=()
+          if [ -n "$INICIO" ]; then ARGS+=(--inicio "$INICIO"); fi
+          if [ -n "$FIM" ]; then ARGS+=(--fim "$FIM"); fi
+          python sync_tupi.py "${ARGS[@]}"
+
+      # Guarda os CSVs baixados por 7 dias para conferência (contêm dados de clientes).
+      - name: Guardar CSVs da execução
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csv-tupi-${{ github.run_id }}
+          path: dados/
+          retention-days: 7
+          if-no-files-found: ignore
