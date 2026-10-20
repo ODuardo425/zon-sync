@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZON Charge · Sincronização diária Tupi → Supabase
+ZON Charge · Sincronização semanal Tupi → Supabase
 =================================================
 
 O que faz, em cada execução:
@@ -8,11 +8,11 @@ O que faz, em cada execução:
      Bearer token automaticamente. Não é mais preciso copiar o token do navegador.
   2. Pede à Tupi o histórico de recargas das estações CPZON00 a CPZON200
      (as que não existirem são ignoradas).
-  3. Grava as recargas no Supabase sem duplicar (o ID da carga é a chave).
+  3. Grava as recargas no Supabase sem duplicar (chave: estação + conector + início + e-mail).
 
-Por padrão baixa os últimos 3 dias completos (anteontem-2 até ontem). Repetir
-os dias anteriores garante que recargas que ainda estavam em andamento à
-meia-noite entrem completas no dia seguinte.
+Roda toda segunda-feira e, por padrão, baixa os últimos 8 dias completos (a semana
+de segunda a domingo + o domingo anterior). O dia repetido garante que recargas
+que estavam em andamento na virada da semana entrem completas.
 
 Variáveis de ambiente (no GitHub Actions ficam em Settings > Secrets):
   TUPI_EMAIL, TUPI_SENHA           login da Tupi (de preferência um usuário técnico)
@@ -20,12 +20,12 @@ Variáveis de ambiente (no GitHub Actions ficam em Settings > Secrets):
   SUPABASE_SERVICE_ROLE_KEY        chave service_role do Supabase (secreta)
 Opcionais:
   ESTACAO_PREFIXO=CPZON  ESTACAO_INICIO=0  ESTACAO_FIM=200  ESTACAO_DIGITOS=2
-  JANELA_DIAS=3                    quantos dias para trás baixar por padrão
+  JANELA_DIAS=8                    quantos dias para trás baixar por padrão
   TUPI_BEARER_TOKEN                usa um token fixo em vez de fazer login (testes)
   TUPI_FIREBASE_API_KEY            força a chave pública do Firebase da Tupi
 
 Exemplos:
-  python sync_tupi.py                                   # rotina diária
+  python sync_tupi.py                                   # rotina semanal (últimos 8 dias)
   python sync_tupi.py --inicio 2026-01-01 --fim 2026-10-14   # carga histórica
   python sync_tupi.py --somente-baixar --inicio 2026-10-01 --fim 2026-10-07
   python sync_tupi.py --testar-login
@@ -61,10 +61,10 @@ COL_EMAIL = "E-mail"
 COL_INICIO = "Início (Horário Local)"
 COL_FIM = "Fim (Horário Local)"
 COL_KWH = "Energia em kWh"
-COL_ESTACAO = "Estação"
 COLS_NOME = ("Usuário", "Nome")
-COLS_ID = ("ID", "Id", "ID da carga", "Identificador", "Identificação",
-           "Charge ID", "Charge Id", "Id da carga")
+# No relatório da Tupi a coluna "ID" é o código da estação (CPZON01…), não o da recarga.
+COLS_ESTACAO = ("ID", "Id", "Código da estação", "Station ID", "Estação")
+COLS_CONECTOR = ("Conector", "ID do conector", "Id do conector", "Connector", "Connector ID", "Porta")
 
 log = logging.getLogger("sync_tupi")
 
@@ -307,6 +307,18 @@ def numero(valor) -> float:
     return n if math.isfinite(n) else 0.0
 
 
+def primeiro(l: dict[str, str], colunas) -> str:
+    return next((l[c].strip() for c in colunas if l.get(c) and l[c].strip()), "")
+
+
+def chave_recarga(l: dict[str, str], email: str) -> str:
+    """Identificador estável de uma recarga: estação + conector + início + e-mail.
+    Um mesmo conector não inicia duas recargas no mesmo segundo, então a chave é única
+    e não muda quando a mesma recarga é baixada de novo."""
+    inicio = parse_data_hora(l.get(COL_INICIO, "")) or l.get(COL_INICIO, "").strip()
+    return "|".join([primeiro(l, COLS_ESTACAO).upper(), primeiro(l, COLS_CONECTOR), inicio, email])
+
+
 def normalizar(linhas: list[dict[str, str]], hoje: date, origem: str = "sync"):
     """Devolve (recargas, clientes, ignoradas)."""
     if linhas and (COL_EMAIL not in linhas[0] or COL_INICIO not in linhas[0]):
@@ -326,15 +338,13 @@ def normalizar(linhas: list[dict[str, str]], hoje: date, origem: str = "sync"):
         if COL_FIM in l and not fim_txt and dia >= ontem:
             ignoradas += 1  # recarga ainda em andamento: entra completa na próxima execução
             continue
-        id_bruto = next((l[c] for c in COLS_ID if l.get(c)), None)
-        rid = id_bruto.strip() if id_bruto else "|".join(
-            [email, l.get(COL_INICIO, ""), fim_txt, l.get(COL_KWH, ""), l.get(COL_ESTACAO, "")])
-        nome = next((l[c] for c in COLS_NOME if l.get(c)), "")
+        rid = chave_recarga(l, email)
+        nome = primeiro(l, COLS_NOME)
         recargas[rid] = {
             "id": rid,
             "email": email or None,
             "nome": nome or None,
-            "estacao": l.get(COL_ESTACAO) or None,
+            "estacao": primeiro(l, COLS_ESTACAO).upper() or None,
             "inicio": parse_data_hora(l.get(COL_INICIO, "")),
             "fim": parse_data_hora(fim_txt),
             "data": dia,
@@ -343,6 +353,10 @@ def normalizar(linhas: list[dict[str, str]], hoje: date, origem: str = "sync"):
         }
         if email and email not in clientes:
             clientes[email] = {"email": email, "nome": nome or None, "origem": "recarga"}
+    validas = len(linhas) - ignoradas
+    if validas >= 20 and len(recargas) < 0.9 * validas:
+        raise ErroSync(f"Só {len(recargas)} de {validas} recargas tiveram identificador único. "
+                       "O formato do relatório da Tupi deve ter mudado; nada foi gravado.")
     return list(recargas.values()), list(clientes.values()), ignoradas
 
 
@@ -371,6 +385,11 @@ class Supabase:
                             data=json.dumps(linhas[i:i + lote], default=str), timeout=120)
             self._ok(r, f"gravar em {tabela}")
 
+    def manter_ativo(self) -> None:
+        """Consulta leve para o plano gratuito do Supabase não pausar o projeto."""
+        r = self.s.get(f"{self.url}/rest/v1/sync_log", params={"select": "id", "limit": "1"}, timeout=30)
+        self._ok(r, "responder à verificação")
+
     def novo_log(self, dados: dict) -> int | None:
         r = self.s.post(f"{self.url}/rest/v1/sync_log", headers={"Prefer": "return=representation"},
                         data=json.dumps(dados, default=str), timeout=30)
@@ -395,6 +414,8 @@ def argumentos(argv=None):
     p.add_argument("--dias-por-lote", type=int, default=31, help="tamanho de cada pedido à Tupi em dias")
     p.add_argument("--somente-baixar", action="store_true", help="só salva os CSVs em ./dados, sem gravar no Supabase")
     p.add_argument("--testar-login", action="store_true", help="só testa o login na Tupi")
+    p.add_argument("--manter-ativo", action="store_true",
+                   help="só faz uma consulta leve no Supabase (evita a pausa do plano gratuito)")
     return p.parse_args(argv)
 
 
@@ -404,7 +425,7 @@ def main(argv=None) -> int:
     a = argumentos(argv)
     hoje = datetime.now(TZ).date()
     try:
-        janela = int(env("JANELA_DIAS", "3"))
+        janela = int(env("JANELA_DIAS", "8"))
         inicio = date.fromisoformat(a.inicio) if a.inicio else hoje - timedelta(days=janela)
         fim = date.fromisoformat(a.fim) if a.fim else hoje - timedelta(days=1)
     except ValueError as e:
@@ -413,6 +434,16 @@ def main(argv=None) -> int:
     if fim < inicio:
         log.error("A data final (%s) é anterior à inicial (%s).", fim, inicio)
         return 2
+
+    if a.manter_ativo:
+        try:
+            Supabase(env("SUPABASE_URL", obrigatorio=True),
+                     env("SUPABASE_SERVICE_ROLE_KEY", obrigatorio=True)).manter_ativo()
+            log.info("Supabase respondeu; projeto mantido ativo.")
+            return 0
+        except (ErroSync, requests.RequestException) as e:
+            log.error("%s", e)
+            return 1
 
     tupi = ClienteTupi(env("TUPI_EMAIL"), env("TUPI_SENHA"), env("TUPI_BEARER_TOKEN"))
     if a.testar_login:
@@ -445,6 +476,7 @@ def main(argv=None) -> int:
     try:
         PASTA_DADOS.mkdir(exist_ok=True)
         linhas: list[dict[str, str]] = []
+        colunas: list[str] = []
         for de, ate in lotes_de_datas(inicio, fim, max(1, a.dias_por_lote)):
             ini_utc, fim_utc = limites_utc(de, ate)
             log.info("Pedindo histórico de %s a %s…", de.strftime("%d/%m/%Y"), ate.strftime("%d/%m/%Y"))
@@ -456,6 +488,9 @@ def main(argv=None) -> int:
                 destino.write_bytes(conteudo)
                 novas = ler_csv(decodificar(conteudo))
                 log.info("  %s: %d linhas", destino.name, len(novas))
+                if novas and not colunas:
+                    colunas = list(novas[0])
+                    log.info("  Colunas do relatório: %s", ", ".join(colunas))
                 linhas += novas
 
         if tupi.estacoes_ignoradas:
@@ -472,7 +507,8 @@ def main(argv=None) -> int:
             sb.atualizar_log(log_id, {"status": "ok", "finalizado_em": datetime.now(timezone.utc),
                                       "linhas_csv": len(linhas), "recargas_gravadas": len(recargas),
                                       "ignoradas": ignoradas,
-                                      "mensagem": f"{len(clientes)} clientes nas recargas"})
+                                      "mensagem": (f"{len(clientes)} clientes nas recargas · colunas: "
+                                                   + ", ".join(colunas))[:1000]})
             log.info("Supabase atualizado.")
         return 0
     except Exception as e:  # registra qualquer falha no log do banco antes de sair
