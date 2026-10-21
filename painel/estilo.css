@@ -180,3 +180,97 @@ details.manual{margin-top:12px}
 details.manual summary{cursor:pointer;font-weight:650;color:var(--tinta-2)}
 .import-linha{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:10px 0}
 .import-linha .campo{display:grid;gap:5px;flex:1;min-width:220px}
+
+/* ===== outubro/2026: filtro de estação, Estações, Tentativas frustradas, ficha ===== */
+:root{
+  --serie-1:#2a78d6; --serie-2:#eb6834;
+  --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#6da7ec; --seq-4:#2a78d6; --seq-5:#184f95;
+  --seq-tinta-claro:#0d366b;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --serie-1:#3987e5; --serie-2:#d95926;
+    --seq-1:#0d366b; --seq-2:#184f95; --seq-3:#256abf; --seq-4:#3987e5; --seq-5:#86b6ef;
+    --seq-tinta-claro:#e7ebf3;
+  }
+}
+.filtro{display:inline-flex;align-items:center;gap:8px}
+.filtros #estacao{min-width:260px;max-width:100%}
+.filtro-ativo{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:var(--destaque-col);border:1px solid var(--linha);border-left:4px solid var(--laranja);border-radius:10px;padding:10px 12px;margin:-4px 0 14px}
+.filtro-ativo button{padding:6px 12px}
+@media (max-width:620px){.filtro{width:100%}.filtro select,.filtros #estacao{flex:1;min-width:0}}
+
+.periodos{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.periodos .rot{font-weight:600;color:var(--tinta-2);margin-right:2px}
+.periodos .nota{margin:0 0 0 6px}
+.periodos .chip{padding:6px 12px}
+.kpis.kpis-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:900px){.kpis.kpis-4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.est-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:14px;align-items:start}
+.est-grid .card.fixo{position:sticky;top:12px}
+@media (max-width:900px){.est-grid{grid-template-columns:1fr}.est-grid .card.fixo{position:static}}
+
+/* barras horizontais */
+.hbar{margin-top:10px}
+.hb-lista{display:flex;flex-direction:column;gap:2px}
+.hb-linha{display:grid;grid-template-columns:minmax(120px,38%) minmax(0,1fr) auto;align-items:center;gap:10px;width:100%;background:none;color:var(--tinta);border:0;border-radius:8px;padding:5px 6px;text-align:left;font-weight:400;cursor:default}
+button.hb-linha{cursor:pointer}
+button.hb-linha:hover,.hb-linha.sel{background:var(--superficie-2)}
+.hb-linha.sel{box-shadow:inset 3px 0 0 var(--laranja)}
+.hb-rot{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.hb-rot b{font-weight:650}
+.hb-rot small{color:var(--tinta-3);font-size:12.5px}
+.hb-trilho{display:flex;gap:2px;height:14px;align-items:stretch;min-width:0}
+.hb-seg{display:block;min-width:2px;background:var(--serie-1)}
+.hb-seg.s2{background:var(--serie-2)}
+.hb-seg:last-child{border-radius:0 4px 4px 0}
+.hb-val{font-variant-numeric:tabular-nums;font-weight:650;font-size:13px;white-space:nowrap;text-align:right;display:inline-flex;align-items:center;gap:6px;justify-content:flex-end}
+.hb-alerta{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:650;color:var(--tinta);background:var(--superficie-2);border:1px solid var(--linha);border-radius:12px;padding:1px 7px 1px 5px}
+.hb-alerta::before{content:"⚠";color:var(--critico);font-size:11px}
+@media (max-width:620px){.hb-linha{grid-template-columns:minmax(0,1fr) auto;row-gap:3px}.hb-rot{grid-column:1/-1}.hb-trilho{grid-column:1}}
+.mais-est{margin-top:10px}
+.legenda{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:var(--tinta-2)}
+.leg{display:inline-flex;align-items:center;gap:6px}
+.leg i{display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--serie-1)}
+.leg i.s2{background:var(--serie-2)}
+
+/* tabela de estações e de tentativas */
+.tabela tbody tr.sel{background:var(--destaque-col)}
+.tabela tbody tr.destaque td:first-child{box-shadow:inset 3px 0 0 var(--alerta)}
+.tabela tbody tr.destaque.critico td:first-child{box-shadow:inset 3px 0 0 var(--critico)}
+.tabela td .forte{color:var(--tinta);font-size:15px}
+.tabela td .quem span{display:block}
+.tabela tr.frustrada td{color:var(--tinta-3)}
+.barra-ferr select{padding:6px 8px}
+
+/* ficha do cliente */
+.mini{grid-template-columns:repeat(6,minmax(0,1fr))}
+@media (max-width:900px){.mini{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:560px){.mini{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.mini small{display:block;color:var(--tinta-3);font-size:11.5px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ficha .duas{margin-bottom:0}
+.ficha .card h3{font-size:15px}
+.frase{margin:8px 0 2px;font-size:14px;color:var(--tinta)}
+.mapa{margin-top:10px}
+.mapa-grade{display:grid;grid-template-columns:34px repeat(6,minmax(0,1fr));gap:2px;font-size:12px}
+.mapa-cab{color:var(--tinta-3);text-align:center;font-size:11px;padding-bottom:2px}
+.mapa-dia{color:var(--tinta-2);font-weight:600;align-self:center}
+.mapa-cel{height:28px;border-radius:4px;background:var(--superficie-2);display:flex;align-items:center;justify-content:center;font-weight:650;font-variant-numeric:tabular-nums;color:var(--seq-tinta-claro)}
+.mapa-cel.n1{background:var(--seq-1)} .mapa-cel.n2{background:var(--seq-2)} .mapa-cel.n3{background:var(--seq-3)}
+.mapa-cel.n4{background:var(--seq-4);color:#fff} .mapa-cel.n5{background:var(--seq-5);color:#fff}
+@media (prefers-color-scheme:dark){.mapa-cel.n4,.mapa-cel.n5{color:#0b1220}.mapa-cel.n1,.mapa-cel.n2,.mapa-cel.n3{color:#e7ebf3}}
+.linha-tempo{min-height:0;margin-top:8px}
+.linha-tempo .trilho{stroke:var(--grade);stroke-width:1}
+.linha-tempo .rot-est{fill:var(--tinta-2);font-size:11.5px}
+.linha-tempo .pt-ok{fill:var(--barra);stroke:var(--superficie);stroke-width:1.5;fill-opacity:.85}
+.linha-tempo .pt-fr{fill:var(--superficie);stroke:var(--critico);stroke-width:2}
+.linha-tempo .alvo-lt{fill:transparent;cursor:crosshair}
+.leg-ponto,.leg-anel{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:-1px}
+.leg-ponto{background:var(--barra)}
+.leg-anel{border:2px solid var(--critico)}
+#tabFal{min-width:1040px}
+#tabFal .sit-cel small{display:block;color:var(--tinta-3);font-size:12px;margin:2px 0 0 15px}
+#tabFal .quando-cel{min-width:230px}
+#tabFal .quando-cel .quem span{white-space:nowrap}
+#tabFal td:last-child{white-space:nowrap}

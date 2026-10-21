@@ -39,15 +39,18 @@
     <button type="button" role="tab" data-aba="resumo" aria-selected="true">Resumo da semana</button>
     <button type="button" role="tab" data-aba="clientes" aria-selected="false">Clientes</button>
     <button type="button" role="tab" data-aba="ausentes" aria-selected="false">Ausentes</button>
+    <button type="button" role="tab" data-aba="estacoes" aria-selected="false">Estações</button>
+    <button type="button" role="tab" data-aba="falhas" aria-selected="false">Tentativas frustradas</button>
     <button type="button" role="tab" data-aba="sync" aria-selected="false">Sincronização</button>
   </nav>
 
   <div class="filtros" id="filtros">
-    <label for="semana">Semana</label>
-    <select id="semana"></select>
+    <span class="filtro" id="filtroSemana"><label for="semana">Semana</label><select id="semana"></select></span>
+    <span class="filtro"><label for="estacao">Estação</label><select id="estacao"><option value="">Todas as estações</option></select></span>
     <p class="nota" id="notaDados" role="status">Carregando dados…</p>
     <button type="button" class="sec" id="recarregar">Atualizar</button>
   </div>
+  <div class="filtro-ativo hidden" id="filtroAtivo" role="status"></div>
   <div class="aviso hidden" id="aviso" role="alert"></div>
 
   <!-- RESUMO -->
@@ -103,6 +106,7 @@
     <div class="card">
       <h3>O que significa cada situação</h3>
       <p class="nota"><span class="sit ativo">Ativo</span> recarregou na semana. &nbsp; <span class="sit queda">Em queda</span> recarregou, mas gastou menos da metade da sua média. &nbsp; <span class="sit novo">Novo</span> primeira recarga da vida foi nesta semana. &nbsp; <span class="sit ausente">Ausente</span> não recarregou na semana (mostra há quantos dias). &nbsp; <span class="sit nunca">Nunca recarregou</span> está no cadastro, mas não tem nenhuma recarga.</p>
+      <p class="nota">Tentativas frustradas (0 kWh e R$ 0,00) não contam como recarga em nenhuma aba de consumo; elas ficam na aba <b>Tentativas frustradas</b>.</p>
     </div>
   </section>
 
@@ -133,6 +137,88 @@
         </table>
       </div>
       <div class="paginacao"><span id="contAusentes"></span><button type="button" class="sec" id="maisAusentes">Mostrar mais 50</button></div>
+    </div>
+  </section>
+
+  <!-- ESTAÇÕES -->
+  <section class="aba hidden" id="aba-estacoes" role="tabpanel">
+    <div class="periodos" id="perEst" role="group" aria-label="Período analisado"></div>
+    <div class="kpis kpis-4" id="kpisEst"></div>
+    <div class="est-grid">
+      <div class="card">
+        <h2>Clientes únicos por estação</h2>
+        <p class="nota">Cada cliente conta <b>uma vez</b> em cada estação onde recarregou, não importa quantas vezes. Quem usou as estações A e B conta nas duas. Clique numa estação para ver com quais outras ela divide clientes.</p>
+        <div class="legenda" id="legEst"></div>
+        <div class="hbar" id="grafEst"></div>
+      </div>
+      <div class="card fixo" id="cardComum">
+        <h2 id="tituloComum">Clientes em comum</h2>
+        <p class="nota" id="notaComum">Escolha uma estação ao lado.</p>
+        <div class="hbar" id="grafComum"></div>
+        <div class="barra-ferr" style="margin-top:12px"><button type="button" class="sec hidden" id="filtrarPorEst">Ver o painel só desta estação</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-topo"><div><h2>Todas as estações</h2><p class="nota">Recargas e kWh contam só as recargas que carregaram. Tentativas frustradas = 0 kWh e R$ 0,00.</p></div>
+        <button type="button" class="sec" id="exportEst">Exportar CSV</button></div>
+      <div class="tabela-wrap">
+        <table class="tabela" id="tabEst">
+          <thead><tr>
+            <th data-ord="cod"><button type="button">Estação</button></th>
+            <th class="num" data-ord="clientes"><button type="button">Clientes únicos</button></th>
+            <th class="num" data-ord="exclusivos"><button type="button">Só usam esta</button></th>
+            <th class="num" data-ord="recargas"><button type="button">Recargas</button></th>
+            <th class="num" data-ord="kwh"><button type="button">kWh</button></th>
+            <th class="num" data-ord="taxa"><button type="button">Tentativas frustradas</button></th>
+            <th data-ord="ultima"><button type="button">Última recarga</button></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- TENTATIVAS FRUSTRADAS -->
+  <section class="aba hidden" id="aba-falhas" role="tabpanel">
+    <div class="periodos" id="perFal" role="group" aria-label="Período analisado"></div>
+    <div class="kpis kpis-4" id="kpisFal"></div>
+    <div class="duas">
+      <div class="card">
+        <h2>Tentativas frustradas por semana</h2>
+        <p class="nota" id="notaGrafFal">Últimas 26 semanas. Uma tentativa frustrada é uma recarga registrada com 0 kWh e R$ 0,00.</p>
+        <div class="grafico" id="grafFal"></div>
+      </div>
+      <div class="card">
+        <h2>Onde mais acontece</h2>
+        <p class="nota">Tentativas frustradas por estação no período. O percentual é sobre todas as tentativas daquela estação.</p>
+        <div class="hbar" id="grafFalEst"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Clientes com tentativas frustradas</h2>
+      <p class="nota"><b>Seguidas</b> = tentativas sem nenhuma recarga com sucesso no meio. Quem não conseguiu recarregar depois aparece primeiro: são os clientes para chamar (e-mail de ajuda) e as estações para conferir.</p>
+      <div class="chips" id="chipsFal" role="group" aria-label="Filtrar clientes"></div>
+      <div class="barra-ferr">
+        <label>Destacar a partir de <select id="limiarFal"><option value="2">2 seguidas</option><option value="3" selected>3 seguidas</option><option value="4">4 seguidas</option><option value="5">5 seguidas</option></select></label>
+        <input id="buscaFal" type="search" placeholder="Buscar por nome ou e-mail" aria-label="Buscar cliente">
+        <label><input type="checkbox" id="soMktFal"> Só quem aceita receber e-mail</label>
+        <button type="button" class="sec" id="exportFal">Exportar lista (CSV)</button>
+      </div>
+      <div class="tabela-wrap">
+        <table class="tabela" id="tabFal">
+          <thead><tr>
+            <th>Cliente</th>
+            <th>Situação</th>
+            <th class="num">Maior sequência</th>
+            <th>Quando e onde</th>
+            <th class="num">Frustradas no período</th>
+            <th>Última recarga com sucesso</th>
+            <th>Aceita e-mail</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="paginacao"><span id="contFal"></span><button type="button" class="sec" id="maisFal">Mostrar mais 50</button></div>
     </div>
   </section>
 
@@ -176,6 +262,23 @@
   </div>
   <div class="ficha-corpo">
     <div class="mini" id="fichaMini"></div>
+    <div class="duas">
+      <div class="card">
+        <h3>Onde recarrega</h3>
+        <p class="frase" id="fichaFrase"></p>
+        <div class="hbar" id="fichaEst"></div>
+      </div>
+      <div class="card">
+        <h3>Dia e horário das recargas</h3>
+        <p class="nota">Quantas recargas em cada dia da semana e faixa de horário.</p>
+        <div class="mapa" id="fichaMapa"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Linha do tempo por estação</h3>
+      <p class="nota">Cada ponto é uma recarga, na linha da estação onde aconteceu. <span class="leg-ponto"></span> recarga &nbsp; <span class="leg-anel"></span> tentativa frustrada</p>
+      <div class="grafico linha-tempo" id="fichaLinha"></div>
+    </div>
     <div class="card">
       <h3>kWh por semana — últimas 52 semanas</h3>
       <div class="grafico" id="fichaGraf"></div>
@@ -183,8 +286,8 @@
     <div class="card">
       <h3>Últimas recargas</h3>
       <div class="tabela-wrap">
-        <table class="tabela" id="fichaTab" style="min-width:520px">
-          <thead><tr><th>Data</th><th>Horário</th><th>Estação</th><th class="num">kWh</th></tr></thead>
+        <table class="tabela" id="fichaTab" style="min-width:620px">
+          <thead><tr><th>Data</th><th>Horário</th><th>Estação</th><th class="num">kWh</th><th class="num">Valor</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
