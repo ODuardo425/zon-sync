@@ -164,6 +164,9 @@ def login_tupi(sessao: requests.Session, email: str, senha: str) -> str:
 
 
 class ClienteTupi:
+    # Esperas (segundos) entre novas tentativas quando a Tupi derruba a conexão ou responde 502/503/504.
+    ESPERAS = (5, 15, 30, 60)
+
     def __init__(self, email: str | None, senha: str | None, token_fixo: str | None = None):
         self.email, self.senha, self.token_fixo = email, senha, token_fixo
         self.s = requests.Session()
@@ -183,14 +186,31 @@ class ClienteTupi:
             self._token_em = time.time()
         self.s.headers["Authorization"] = f"Bearer {self._token}"
 
+    def _com_tentativas(self, fazer, descricao: str) -> requests.Response:
+        """Repete a chamada se a conexão cair ou a Tupi responder 502/503/504 (falhas passageiras)."""
+        for n, espera in enumerate((*self.ESPERAS, None), 1):
+            try:
+                r = fazer()
+                if r.status_code not in (502, 503, 504) or espera is None:
+                    return r
+                motivo = f"HTTP {r.status_code}"
+            except (requests.ConnectionError, requests.Timeout) as e:
+                if espera is None:
+                    raise
+                motivo = type(e).__name__
+            log.warning("Tupi não respondeu (%s) ao %s; tentando de novo em %ss (tentativa %d de %d).",
+                        motivo, descricao, espera, n + 1, len(self.ESPERAS) + 1)
+            time.sleep(espera)
+
     def req(self, metodo: str, url: str, **kw) -> requests.Response:
         self.autenticar()
         kw.setdefault("timeout", 90)
-        r = self.s.request(metodo, url, **kw)
+        descricao = f"{metodo} {urlparse(url).path}"
+        r = self._com_tentativas(lambda: self.s.request(metodo, url, **kw), descricao)
         if r.status_code == 401 and not self.token_fixo:
             log.info("Token expirado; renovando…")
             self.autenticar(forcar=True)
-            r = self.s.request(metodo, url, **kw)
+            r = self._com_tentativas(lambda: self.s.request(metodo, url, **kw), descricao)
         return r
 
     # ---- download do histórico (mesmo fluxo do script original) ----
@@ -230,9 +250,10 @@ class ClienteTupi:
             raise ErroSync("Relatório concluído, mas a Tupi não informou o link do arquivo.")
         # Link em outro domínio (ex.: S3 assinado) é baixado sem enviar o token da Tupi.
         mesmo_host = urlparse(url).netloc == urlparse(CPMS_API).netloc
-        arq = self.req("GET", url) if mesmo_host else requests.get(url, timeout=120)
+        direto = lambda: self._com_tentativas(lambda: requests.get(url, timeout=120), "baixar o arquivo")
+        arq = self.req("GET", url) if mesmo_host else direto()
         if arq.status_code in (400, 401, 403):
-            arq = requests.get(url, timeout=120) if mesmo_host else self.req("GET", url)
+            arq = direto() if mesmo_host else self.req("GET", url)
         arq.raise_for_status()
         return arq.content
 
@@ -489,16 +510,20 @@ def main(argv=None) -> int:
 
     log.info("Janela: %s a %s · %d estações (%s … %s)", inicio.strftime("%d/%m/%Y"),
              fim.strftime("%d/%m/%Y"), len(estacoes), estacoes[0], estacoes[-1])
+    gravado_ate: date | None = None   # último dia já salvo no banco (para continuar se algo falhar)
     try:
         PASTA_DADOS.mkdir(exist_ok=True)
-        linhas: list[dict[str, str]] = []
         colunas: list[str] = []
+        tot_linhas = tot_recargas = tot_ignoradas = 0
+        emails: set[str] = set()
+        sem_colunas_novas = False
         for de, ate in lotes_de_datas(inicio, fim, max(1, a.dias_por_lote)):
             ini_utc, fim_utc = limites_utc(de, ate)
             log.info("Pedindo histórico de %s a %s…", de.strftime("%d/%m/%Y"), ate.strftime("%d/%m/%Y"))
             arquivos = tupi.baixar_com_divisao(estacoes, ini_utc, fim_utc)
             if not arquivos:
                 raise ErroSync("Nenhuma estação retornou dados. Confira os códigos e as permissões do usuário.")
+            linhas: list[dict[str, str]] = []
             for n, conteudo in enumerate(arquivos, 1):
                 destino = PASTA_DADOS / f"historico_{de:%Y%m%d}_{ate:%Y%m%d}_{n}.csv"
                 destino.write_bytes(conteudo)
@@ -509,34 +534,46 @@ def main(argv=None) -> int:
                     log.info("  Colunas do relatório: %s", ", ".join(colunas))
                 linhas += novas
 
+            # grava cada período assim que chega: se algo falhar depois, o que já veio fica salvo
+            recargas, clientes, ignoradas = normalizar(linhas, hoje)
+            tot_linhas += len(linhas); tot_recargas += len(recargas); tot_ignoradas += ignoradas
+            emails.update(c["email"] for c in clientes)
+            if sb and recargas:
+                if sem_colunas_novas:
+                    recargas = [{k: v for k, v in r.items() if k not in CAMPOS_NOVOS} for r in recargas]
+                try:
+                    sb.upsert("recargas", recargas, "id")
+                except ErroSync as e:
+                    # Banco ainda sem as colunas novas (schema.sql não foi rodado): grava sem elas.
+                    if sem_colunas_novas or not any(c in str(e) for c in CAMPOS_NOVOS):
+                        raise
+                    sem_colunas_novas = True
+                    log.warning("O banco ainda não tem as colunas %s. Rode o supabase/schema.sql atualizado. "
+                                "Gravando sem elas por enquanto.", ", ".join(CAMPOS_NOVOS))
+                    sb.upsert("recargas", [{k: v for k, v in r.items() if k not in CAMPOS_NOVOS} for r in recargas], "id")
+                sb.upsert("clientes", clientes, "email", ignorar_existentes=True)
+                log.info("  %d recargas gravadas no Supabase.", len(recargas))
+            gravado_ate = ate
+
         if tupi.estacoes_ignoradas:
             ign = sorted(set(tupi.estacoes_ignoradas))
             log.info("%d códigos recusados pela Tupi (provavelmente ainda não existem): %s",
                      len(ign), ", ".join(ign[:5]) + (" …" if len(ign) > 5 else ""))
-
-        recargas, clientes, ignoradas = normalizar(linhas, hoje)
-        log.info("%d linhas lidas · %d recargas válidas · %d ignoradas", len(linhas), len(recargas), ignoradas)
+        log.info("%d linhas lidas · %d recargas válidas · %d ignoradas", tot_linhas, tot_recargas, tot_ignoradas)
 
         if sb:
-            try:
-                sb.upsert("recargas", recargas, "id")
-            except ErroSync as e:
-                # Banco ainda sem as colunas novas (schema.sql não foi rodado): grava sem elas.
-                if not any(c in str(e) for c in CAMPOS_NOVOS):
-                    raise
-                log.warning("O banco ainda não tem as colunas %s. Rode o supabase/schema.sql atualizado. "
-                            "Gravando sem elas por enquanto.", ", ".join(CAMPOS_NOVOS))
-                sb.upsert("recargas", [{k: v for k, v in r.items() if k not in CAMPOS_NOVOS} for r in recargas], "id")
-            sb.upsert("clientes", clientes, "email", ignorar_existentes=True)
             sb.atualizar_log(log_id, {"status": "ok", "finalizado_em": datetime.now(timezone.utc),
-                                      "linhas_csv": len(linhas), "recargas_gravadas": len(recargas),
-                                      "ignoradas": ignoradas,
-                                      "mensagem": (f"{len(clientes)} clientes nas recargas · colunas: "
+                                      "linhas_csv": tot_linhas, "recargas_gravadas": tot_recargas,
+                                      "ignoradas": tot_ignoradas,
+                                      "mensagem": (f"{len(emails)} clientes nas recargas · colunas: "
                                                    + ", ".join(colunas))[:1000]})
             log.info("Supabase atualizado.")
         return 0
     except Exception as e:  # registra qualquer falha no log do banco antes de sair
         msg = str(e) if isinstance(e, ErroSync) else f"{type(e).__name__}: {e}"
+        if sb and gravado_ate:
+            msg += (f" — Já ficou gravado até {gravado_ate:%d/%m/%Y}. Para continuar, rode de novo com "
+                    f"início {gravado_ate + timedelta(days=1):%Y-%m-%d}.")
         log.error("Sincronização falhou: %s", msg)
         if sb:
             try:
