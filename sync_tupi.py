@@ -65,6 +65,11 @@ COLS_NOME = ("Usuário", "Nome")
 # No relatório da Tupi a coluna "ID" é o código da estação (CPZON01…), não o da recarga.
 COLS_ESTACAO = ("ID", "Id", "Código da estação", "Station ID", "Estação")
 COLS_CONECTOR = ("Conector", "ID do conector", "Id do conector", "Connector", "Connector ID", "Porta")
+# Campos extras (outubro/2026). Atenção: NÃO entram na chave da recarga — mudar a chave duplicaria o histórico.
+COLS_NOME_ESTACAO = ("Estação", "Nome da estação", "Station")
+COLS_PLUG = ("Plug", "Conector", "Connector")
+COLS_VALOR = ("Valor Total", "Valor total", "Valor")
+CAMPOS_NOVOS = ("estacao_nome", "plug", "valor")
 
 log = logging.getLogger("sync_tupi")
 
@@ -307,6 +312,14 @@ def numero(valor) -> float:
     return n if math.isfinite(n) else 0.0
 
 
+def dinheiro(l: dict[str, str], colunas) -> float | None:
+    """Valor em reais ("R$ 1.234,56", "12,30", "0") -> número. None se a coluna não existe no relatório."""
+    col = next((c for c in colunas if c in l), None)
+    if col is None:
+        return None
+    return round(numero(re.sub(r"[^0-9,.\-]", "", l.get(col) or "")), 2)
+
+
 def primeiro(l: dict[str, str], colunas) -> str:
     return next((l[c].strip() for c in colunas if l.get(c) and l[c].strip()), "")
 
@@ -350,6 +363,9 @@ def normalizar(linhas: list[dict[str, str]], hoje: date, origem: str = "sync"):
             "data": dia,
             "kwh": round(numero(l.get(COL_KWH)), 3),
             "origem": origem,
+            "estacao_nome": primeiro(l, COLS_NOME_ESTACAO) or None,
+            "plug": primeiro(l, COLS_PLUG) or None,
+            "valor": dinheiro(l, COLS_VALOR),
         }
         if email and email not in clientes:
             clientes[email] = {"email": email, "nome": nome or None, "origem": "recarga"}
@@ -502,7 +518,15 @@ def main(argv=None) -> int:
         log.info("%d linhas lidas · %d recargas válidas · %d ignoradas", len(linhas), len(recargas), ignoradas)
 
         if sb:
-            sb.upsert("recargas", recargas, "id")
+            try:
+                sb.upsert("recargas", recargas, "id")
+            except ErroSync as e:
+                # Banco ainda sem as colunas novas (schema.sql não foi rodado): grava sem elas.
+                if not any(c in str(e) for c in CAMPOS_NOVOS):
+                    raise
+                log.warning("O banco ainda não tem as colunas %s. Rode o supabase/schema.sql atualizado. "
+                            "Gravando sem elas por enquanto.", ", ".join(CAMPOS_NOVOS))
+                sb.upsert("recargas", [{k: v for k, v in r.items() if k not in CAMPOS_NOVOS} for r in recargas], "id")
             sb.upsert("clientes", clientes, "email", ignorar_existentes=True)
             sb.atualizar_log(log_id, {"status": "ok", "finalizado_em": datetime.now(timezone.utc),
                                       "linhas_csv": len(linhas), "recargas_gravadas": len(recargas),
