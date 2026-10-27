@@ -353,24 +353,31 @@ def chave_recarga(l: dict[str, str], email: str) -> str:
     return "|".join([primeiro(l, COLS_ESTACAO).upper(), primeiro(l, COLS_CONECTOR), inicio, email])
 
 
-def normalizar(linhas: list[dict[str, str]], hoje: date, origem: str = "sync"):
-    """Devolve (recargas, clientes, ignoradas)."""
+def normalizar(linhas: list[dict[str, str]], hoje: date, origem: str = "sync", ate: date | None = None):
+    """Devolve (recargas, clientes, ignoradas).
+    `ate` = último dia pedido à Tupi. Ela devolve também o dia seguinte até a hora do pedido
+    (parcial); esses dias ficam de fora e entram completos na próxima execução."""
     if linhas and (COL_EMAIL not in linhas[0] or COL_INICIO not in linhas[0]):
         raise ErroSync("O CSV da Tupi não tem as colunas esperadas "
                        f"('{COL_EMAIL}', '{COL_INICIO}'). Colunas recebidas: {list(linhas[0])}")
     recargas: dict[str, dict] = {}
     clientes: dict[str, dict] = {}
     ignoradas = 0
-    ontem = (hoje - timedelta(days=1)).isoformat()
+    limite = ate.isoformat() if ate else None
     for l in linhas:
         email = l.get(COL_EMAIL, "").strip().lower()
         dia = parse_data(l.get(COL_INICIO, ""))
         if not dia:
             ignoradas += 1
             continue
+        if limite and dia > limite:
+            ignoradas += 1  # dia de hoje (incompleto), que a Tupi manda junto
+            continue
         fim_txt = l.get(COL_FIM, "")
-        if COL_FIM in l and not fim_txt and dia >= ontem:
-            ignoradas += 1  # recarga ainda em andamento: entra completa na próxima execução
+        if COL_FIM in l and not parse_data_hora(fim_txt):
+            # sem horário de fim = recarga em andamento ou ainda não fechada pela Tupi (kWh zerado e,
+            # às vezes, horário de início que muda 1 ou 2 s depois). Entra completa na próxima execução.
+            ignoradas += 1
             continue
         rid = chave_recarga(l, email)
         nome = primeiro(l, COLS_NOME)
@@ -535,7 +542,7 @@ def main(argv=None) -> int:
                 linhas += novas
 
             # grava cada período assim que chega: se algo falhar depois, o que já veio fica salvo
-            recargas, clientes, ignoradas = normalizar(linhas, hoje)
+            recargas, clientes, ignoradas = normalizar(linhas, hoje, ate=ate)
             tot_linhas += len(linhas); tot_recargas += len(recargas); tot_ignoradas += ignoradas
             emails.update(c["email"] for c in clientes)
             if sb and recargas:
