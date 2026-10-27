@@ -51,19 +51,34 @@ async function authCall(grant, body) {
   saveSession({access_token: j.access_token, refresh_token: j.refresh_token, expires_at: j.expires_at || Math.floor(Date.now() / 1000) + (j.expires_in || 3600), email: j.user?.email || session?.email || ''});
   return session;
 }
+let _renovando = null;   // uma renovação de sessão por vez (as consultas saem em paralelo)
+function renovarSessao() {
+  if (!_renovando) _renovando = authCall('refresh_token', {refresh_token: session.refresh_token}).finally(() => { _renovando = null; });
+  return _renovando;
+}
 async function accessToken() {
   if (!session) throw Error('Sessão expirada. Entre novamente.');
-  if ((session.expires_at || 0) - 60 < Date.now() / 1000) await authCall('refresh_token', {refresh_token: session.refresh_token});
+  if ((session.expires_at || 0) - 60 < Date.now() / 1000) await renovarSessao();
   return session.access_token;
 }
 async function sbFetch(path, opts = {}, retry = true) {
   const tok = await accessToken();
   const r = await fetch(sbUrl() + path, {...opts, headers: {apikey: sbKey(), Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', ...(opts.headers || {})}});
-  if (r.status === 401 && retry && session) { await authCall('refresh_token', {refresh_token: session.refresh_token}); return sbFetch(path, opts, false); }
+  if (r.status === 401 && retry && session) { await renovarSessao(); return sbFetch(path, opts, false); }
   if (!r.ok) { const t = await r.text(); let m; try { m = JSON.parse(t).message; } catch (e) {} throw Error(m || t || ('HTTP ' + r.status)); }
   return r;
 }
-const rpc = async (fn, args = {}) => (await sbFetch('/rest/v1/rpc/' + fn, {method: 'POST', body: JSON.stringify(args)})).json();
+const DEMOROU = /statement timeout|canceling statement|timed out|timeout/i;
+const FALTA_FUNCAO = /could not find the function|PGRST202|function .* does not exist/i;
+async function rpc(fn, args = {}) {
+  const chamar = async () => (await sbFetch('/rest/v1/rpc/' + fn, {method: 'POST', body: JSON.stringify(args)})).json();
+  try { return await chamar(); }
+  catch (e) {
+    // O Supabase corta consultas que passam de alguns segundos; a segunda tentativa costuma ser rápida (cache já aquecido).
+    if (DEMOROU.test(e.message)) return chamar();
+    throw e;
+  }
+}
 async function sbUpsert(tabela, linhas, conflito, progresso) {
   for (let i = 0; i < linhas.length; i += 500) {
     await sbFetch(`/rest/v1/${tabela}?on_conflict=${conflito}`, {method: 'POST', headers: {Prefer: 'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify(linhas.slice(i, i + 500))});
@@ -167,17 +182,18 @@ function avaliarSemana(wi) {
 
 async function carregar() {
   $('app').classList.add('carregando');
-  $('notaDados').textContent = 'Carregando dados…';
+  $('notaDados').textContent = 'Carregando dados… pode levar alguns segundos.';
   try {
     S.cacheDados.clear(); S.est.cache.clear(); S.fal.cache.clear(); S.est.dados = null; S.fal.dados = null;
-    const [est, sync] = await Promise.all([
-      rpc('painel_estacoes', {}).catch(e => ({erro: e.message})),
-      rpc('painel_sync', {p_limite: 30})]);
-    S.semFuncoesNovas = !!est.erro;
-    if (!est.erro) S.est.cache.set('tudo', est);
-    montarListaEstacoes(est.erro ? [] : est.estacoes || []);
-    if (S.semFuncoesNovas) S.estacao = '';
-    S.dados = montarDados(await buscarDados(S.estacao) || {});
+    // as três consultas saem juntas; a tela principal aparece assim que o consumo chega
+    const pEst = rpc('painel_estacoes', {}).catch(e => ({erro: e.message}));
+    const pSync = rpc('painel_sync', {p_limite: 30}).catch(() => []);
+    const pDados = buscarDados(S.estacao).catch(async e => {
+      if (!S.estacao || !FALTA_FUNCAO.test(e.message)) throw e;
+      S.estacao = ''; return buscarDados('');   // banco sem o filtro de estação: volta para todas
+    });
+    const [bruto, sync] = await Promise.all([pDados, pSync]);
+    S.dados = montarDados(bruto || {});
     S.sync = sync || [];
     const D = S.dados, avisos = [];
     if (D.vazio || (!D.clientes.length && !S.estacao)) {
@@ -190,19 +206,34 @@ async function carregar() {
       if (S.wi < 0 || S.wi >= D.semanas.length) S.wi = D.ultimaCompleta || D.semanas.length < 2 ? D.semanas.length - 1 : D.semanas.length - 2;
       if (!S.estacao && D.totalRecargas < 2000 && D.clientes.length > 5000)
         avisos.push(`O banco tem só ${fmtN(D.totalRecargas)} recargas para ${fmtN(D.clientes.length)} clientes. O histórico ainda não foi carregado por completo: rode a carga do histórico no GitHub (Actions → Sincronizar Tupi → Run workflow, com a data inicial lá atrás).`);
-      if (S.semFuncoesNovas) avisos.push(AVISO_SQL);
-      else if (S.nomesEst.size === 0 && (est.estacoes || []).length)
-        avisos.push('Os nomes das estações e os valores em R$ ainda não estão no banco. Eles chegam quando a carga do histórico rodar de novo (GitHub → Actions → Sincronizar Tupi → Run workflow, data inicial 2025-01-01). Até lá, tentativas frustradas são identificadas só pelo 0 kWh.');
     }
     mostrarAviso(avisos.join(' '));
     montarSeletor();
     mostrarFiltroAtivo();
     recalcular();
+    $('app').classList.remove('carregando');
+    // lista de estações (filtro, abas Estações e Tentativas) chega em seguida, sem travar a tela
+    const est = await pEst;
+    if (est.erro) {
+      S.semFuncoesNovas = FALTA_FUNCAO.test(est.erro);
+      montarListaEstacoes([]);
+      avisos.push(S.semFuncoesNovas ? AVISO_SQL : 'A lista de estações demorou para carregar. Clique em Atualizar para tentar de novo.');
+    } else {
+      S.semFuncoesNovas = false;
+      S.est.cache.set('tudo', est);
+      montarListaEstacoes(est.estacoes || []);
+      if (S.nomesEst.size === 0 && (est.estacoes || []).length)
+        avisos.push('Os nomes das estações e os valores em R$ ainda não estão no banco. Eles chegam quando a carga do histórico rodar de novo (GitHub → Actions → Sincronizar Tupi → Run workflow, data inicial 2025-01-01). Até lá, tentativas frustradas são identificadas só pelo 0 kWh.');
+    }
+    mostrarAviso(avisos.join(' '));
+    mostrarFiltroAtivo();
     if (S.aba === 'estacoes') carregarEstacoes();
     if (S.aba === 'falhas') carregarFalhas();
   } catch (e) {
-    if (!session || /sess|jwt|token|refresh/i.test(e.message)) { saveSession(null); mostrarLogin('Sua sessão expirou. Entre novamente.'); return; }
-    mostrarAviso('Não foi possível carregar os dados: ' + e.message);
+    if (!session || /sess|jwt|refresh|invalid.*token|token.*(expired|invalid)/i.test(e.message)) { saveSession(null); mostrarLogin('Sua sessão expirou. Entre novamente.'); return; }
+    mostrarAviso(DEMOROU.test(e.message)
+      ? 'O banco demorou demais para responder (o Supabase corta consultas longas). Clique em Atualizar para tentar de novo; a segunda vez costuma ser rápida.'
+      : 'Não foi possível carregar os dados: ' + e.message);
     $('notaDados').textContent = '';
   } finally { $('app').classList.remove('carregando'); }
 }
@@ -554,7 +585,7 @@ async function carregarEstacoes() {
     $('grafEst').replaceChildren(el('p', {class: 'nota', text: 'Carregando…'}));
     const desde = desdePeriodo(S.est.periodo);
     try { d = await rpc('painel_estacoes', desde ? {p_desde: desde} : {}); S.est.cache.set(S.est.periodo, d); }
-    catch (e) { $('grafEst').replaceChildren(el('p', {class: 'nota', text: 'Não foi possível carregar as estações: ' + e.message})); return; }
+    catch (e) { $('grafEst').replaceChildren(el('p', {class: 'nota', text: DEMOROU.test(e.message) ? 'O banco demorou demais para responder. Escolha o período de novo ou clique em Atualizar.' : 'Não foi possível carregar as estações: ' + e.message})); return; }
   }
   const lista = (d.estacoes || []).map(a => {
     const x = {cod: a[0], nome: a[1] || nomeEst(a[0]), clientes: +a[2], exclusivos: +a[3], recargas: +a[4], kwh: +a[5], frustradas: +a[6], primeira: a[7], ultima: a[8]};
@@ -650,7 +681,7 @@ async function carregarFalhas() {
     if (desde) args.p_desde = desde;
     if (S.estacao) args.p_estacao = S.estacao;
     try { d = await rpc('painel_falhas', args); S.fal.cache.set(chave, d); }
-    catch (e) { $('tabFal').tBodies[0].replaceChildren(el('tr', {}, el('td', {colspan: 7, class: 'vazio', text: 'Não foi possível carregar: ' + e.message}))); return; }
+    catch (e) { $('tabFal').tBodies[0].replaceChildren(el('tr', {}, el('td', {colspan: 7, class: 'vazio', text: DEMOROU.test(e.message) ? 'O banco demorou demais para responder. Escolha o período de novo ou clique em Atualizar.' : 'Não foi possível carregar: ' + e.message}))); return; }
   }
   const seq = (n, ini, fim, est) => ({n: +n || 0, ini, fim, est: est || ''});
   const fimS = d.ultima_data ? somaDias(d.ultima_data, -((dia(d.ultima_data).getDay() + 6) % 7)) : null;
