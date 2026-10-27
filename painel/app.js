@@ -186,7 +186,10 @@ async function carregar() {
   try {
     S.cacheDados.clear(); S.est.cache.clear(); S.fal.cache.clear(); S.est.dados = null; S.fal.dados = null;
     // as três consultas saem juntas; a tela principal aparece assim que o consumo chega
-    const pEst = rpc('painel_estacoes', {}).catch(e => ({erro: e.message}));
+    // lista leve (só código e nome); se o banco ainda não tiver a função nova, usa a completa
+    const pEst = rpc('painel_lista_estacoes', {}).then(l => ({estacoes: l, leve: true}))
+      .catch(e => FALTA_FUNCAO.test(e.message) ? rpc('painel_estacoes', {}) : Promise.reject(e))
+      .catch(e => ({erro: e.message}));
     const pSync = rpc('painel_sync', {p_limite: 30}).catch(() => []);
     const pDados = buscarDados(S.estacao).catch(async e => {
       if (!S.estacao || !FALTA_FUNCAO.test(e.message)) throw e;
@@ -220,7 +223,7 @@ async function carregar() {
       avisos.push(S.semFuncoesNovas ? AVISO_SQL : 'A lista de estações demorou para carregar. Clique em Atualizar para tentar de novo.');
     } else {
       S.semFuncoesNovas = false;
-      S.est.cache.set('tudo', est);
+      if (!est.leve) S.est.cache.set('tudo', est);
       montarListaEstacoes(est.estacoes || []);
       if (S.nomesEst.size === 0 && (est.estacoes || []).length)
         avisos.push('Os nomes das estações e os valores em R$ ainda não estão no banco. Eles chegam quando a carga do histórico rodar de novo (GitHub → Actions → Sincronizar Tupi → Run workflow, data inicial 2025-01-01). Até lá, tentativas frustradas são identificadas só pelo 0 kWh.');
